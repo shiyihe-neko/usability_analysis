@@ -6,12 +6,14 @@ import re
 import pandas as pd
 import matplotlib.pyplot as plt
 
-def load_quiz_data(folder_path):
+def load_quiz_data(folder_path, ignore_completed=False):
     """
     Iterate over all .json files in folder_path:
-      - Include only those with quiz['completed'] == True
+      - By default, include only those with quiz['completed'] == True;
+        if ignore_completed=True，则不做此过滤
       - Rename answer keys that have numeric suffixes (_1, _2, …)
       - Apply renaming logic for post-task-question and post-task-survey keys
+
     Returns a dict mapping each filename (without extension) to its processed quiz data dict.
     """
     def extract_suffix(key):
@@ -23,16 +25,18 @@ def load_quiz_data(folder_path):
 
     all_data = {}
     for fn in os.listdir(folder_path):
-        if not fn.endswith('.json'):
+        if not fn.lower().endswith('.json'):
             continue
         path = os.path.join(folder_path, fn)
         try:
             with open(path, encoding='utf-8') as f:
                 quiz = json.load(f)
         except json.JSONDecodeError:
+            # 无法解析就跳过
             continue
 
-        if not quiz.get('completed', False):
+        # 如果不忽略 completed 检查，且 completed!=True，就跳过
+        if not ignore_completed and not quiz.get('completed', False):
             continue
 
         key_name = os.path.splitext(fn)[0]
@@ -42,7 +46,7 @@ def load_quiz_data(folder_path):
         if not isinstance(answers, dict):
             continue
 
-        # rename
+        # 重命名逻辑
         sorted_keys = sorted(answers.keys(), key=extract_suffix)
         new_answers = {}
         last_task = None
@@ -50,12 +54,9 @@ def load_quiz_data(folder_path):
             base = remove_suffix(old)
 
             if base == 'post-task-question':
-                if last_task:
-                    new_key = f"{last_task}_post-task-question"
-                else:
-                    new_key = base
+                new_key = f"{last_task}_post-task-question" if last_task else base
             elif base.startswith('post-task-survey'):
-                if i>0:
+                if i > 0:
                     prev = sorted_keys[i-1]
                     prev_base = remove_suffix(prev)
                     suffix = prev_base[prev_base.rfind('-'):] if '-' in prev_base else ''
@@ -72,7 +73,6 @@ def load_quiz_data(folder_path):
         quiz['answers'] = new_answers
 
     return all_data
-
 
 def extract_format_time(all_data):
     """
@@ -273,3 +273,35 @@ def participant_format_statistics(df_participant):
     total_participant = len(df_participant)
     print(f"Total number of valid participants: {total_participant}")
     return format_stat
+
+def diagnose_all_json(folder_path):
+    """
+    扫描给定文件夹下的 .json 文件，尝试全部解析，报告哪些解析成功、哪些失败。
+
+    Parameters:
+      folder_path (str): 存放 JSON 文件的目录路径
+
+    Returns:
+      tuple:
+        - loaded (list of str): 成功解析的文件名列表
+        - decode_errors (list of str): 解析失败（JSONDecodeError）的文件名列表
+    """
+    json_files = [f for f in os.listdir(folder_path) if f.lower().endswith('.json')]
+    loaded = []
+    decode_errors = []
+
+    for fn in json_files:
+        path = os.path.join(folder_path, fn)
+        try:
+            with open(path, encoding='utf-8') as f:
+                json.load(f)
+        except json.JSONDecodeError:
+            decode_errors.append(fn)
+        else:
+            loaded.append(fn)
+
+    print(f"all JSON files: {len(json_files)}")
+    print(f"Successfully parsed: {len(loaded)}")
+    print(f"Parsing failed ({len(decode_errors)})：\n", decode_errors)
+
+    return loaded, decode_errors
