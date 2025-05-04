@@ -266,3 +266,10 @@ def plot_tasks_time_by_format(df_summary,
     plt.xticks(rotation=45, ha='right')
     plt.tight_layout()
     return fig
+
+
+def participant_format_statistics(df_participant):
+    format_stat = df_participant['format'].value_counts()
+    total_participant = len(df_participant)
+    print(f"Total number of valid participants: {total_participant}")
+    return format_stat
