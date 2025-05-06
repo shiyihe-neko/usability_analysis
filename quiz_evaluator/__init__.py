@@ -7,6 +7,9 @@ import pandas as pd
 import re
 from collections import Counter
 import math
+from scipy.stats import levene, f_oneway, kruskal
+from statsmodels.stats.multicomp import pairwise_tukeyhsd
+from typing import Tuple
 
 def evaluate_quiz_answers_from_tutorial(all_data):
     """
@@ -292,6 +295,149 @@ def plot_quiz_metrics_by_group(df_quiz,
     plt.tight_layout()
     return fig
     
+
+def process_quiz_metrics_per_participant(
+    df_quiz: pd.DataFrame,
+    format_list: list = None
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    1) Aggregate quiz data to one row per participant × format, computing:
+         - correct_rate       = mean of is_correct
+         - num_wrong_attempts = mean of num_wrong_attempts
+         - wrong_choice_count = mean of wrong_choice_count
+    2) Compute the format-level means of those three metrics.
+
+    Args:
+      df_quiz     Original quiz-level DataFrame.
+      format_list Optional list of formats to keep.
+
+    Returns:
+      df_part_summary      DataFrame with columns
+        ['participantId','format','correct_rate','num_wrong_attempts','wrong_choice_count']
+      df_format_mean       DataFrame with columns
+        ['format','correct_rate','num_wrong_attempts','wrong_choice_count']
+        where each row is the average across participants for that format.
+    """
+    df = df_quiz.copy()
+    if format_list is not None:
+        df = df[df['format'].isin(format_list)]
+
+    # Participant-level summary
+    df_part_summary = (
+        df
+        .groupby(['participantId','format'], as_index=False)
+        .agg(
+            correct_rate       = ('is_correct',        'mean'),
+            num_wrong_attempts = ('num_wrong_attempts','mean'),
+            wrong_choice_count = ('wrong_choice_count','mean'),
+        )
+    )
+
+    # Format-level mean summary
+    df_format_mean = (
+        df_part_summary
+        .groupby('format', as_index=False)
+        .agg(
+            correct_rate       = ('correct_rate',       'mean'),
+            num_wrong_attempts = ('num_wrong_attempts', 'mean'),
+            wrong_choice_count = ('wrong_choice_count', 'mean'),
+        )
+    )
+
+    return df_part_summary, df_format_mean
+
+def test_quiz_metrics(
+    df_summary: pd.DataFrame,
+    metrics: list = None,
+    group_col: str = 'format',
+    alpha: float = 0.05
+) -> dict:
+    """
+    For each metric in `metrics`, test whether participant-level values
+    differ by `group_col` using:
+      1. Levene’s test for equal variances
+      2. One-way ANOVA if p_levene > alpha; otherwise Kruskal–Wallis
+      3. Tukey HSD post-hoc if ANOVA chosen and p < alpha
+
+    Builds an English interpretation for each metric.
+
+    Returns a dict mapping metric -> {
+      'levene': (W, p_levene),
+      'method': 'ANOVA' or 'Kruskal–Wallis',
+      'stat': F or H statistic,
+      'p_value': p-value,
+      'tukey': TukeyHSDResults or None,
+      'interpretation': str
+    }
+    """
+    # Default metrics
+    if metrics is None:
+        metrics = ['correct_rate','num_wrong_attempts','wrong_choice_count']
+
+    results = {}
+    for metric in metrics:
+        if metric not in df_summary.columns:
+            print(f"⚠️ Column '{metric}' not found in summary; skipping.")
+            continue
+
+        sub = df_summary[[group_col, metric]].dropna()
+        groups = [g[metric].values for _, g in sub.groupby(group_col)]
+        if len(groups) < 2:
+            print(f"⚠️ Not enough formats to compare for '{metric}'; skipping.")
+            continue
+
+        # 1) Levene’s test
+        w_stat, p_levene = levene(*groups)
+
+        # 2) Choose ANOVA vs Kruskal–Wallis
+        if p_levene > alpha:
+            stat, pval = f_oneway(*groups)
+            method = 'ANOVA'
+        else:
+            stat, pval = kruskal(*groups)
+            method = 'Kruskal–Wallis'
+
+        # 3) Tukey HSD if ANOVA & significant
+        tukey = None
+        if method == 'ANOVA' and pval < alpha:
+            tukey = pairwise_tukeyhsd(
+                endog=sub[metric],
+                groups=sub[group_col],
+                alpha=alpha
+            )
+
+        # 4) Build interpretation
+        var_msg = (
+            f"Levene’s test p = {p_levene:.3f} "
+            f"({'homogeneous' if p_levene>alpha else 'heterogeneous'}) variances."
+        )
+        if pval < alpha:
+            main_msg = (
+                f"{method} p = {pval:.3f} (< {alpha}): "
+                "formats differ significantly."
+            )
+            if tukey is not None:
+                main_msg += " See Tukey HSD for pairwise contrasts."
+        else:
+            main_msg = (
+                f"{method} p = {pval:.3f} (≥ {alpha}): "
+                "no significant format differences."
+            )
+
+        interp = f"Metric '{metric}': {var_msg} {main_msg}"
+
+        results[metric] = {
+            'levene': (w_stat, p_levene),
+            'method': method,
+            'stat': stat,
+            'p_value': pval,
+            'tukey': tukey,
+            'interpretation': interp
+        }
+
+    return results
+
+
 # def _aggregate_dicts(series):
 #     """
 #     把一列 dict 累加后取平均
@@ -495,6 +641,109 @@ def plot_nasa_tlx_by_format(df_nasa,
     plt.tight_layout()
     return fig
 
+def test_nasa_metrics_by_format(
+    df: pd.DataFrame,
+    metrics: list = None,
+    format_list: list = None,
+    group_col: str = 'format',
+    alpha: float = 0.05
+) -> dict:
+    """
+    For each NASA‐TLX metric in `metrics`, test whether values differ across
+    formats, guarding against non-numeric entries.
+
+    Steps:
+      1. Optionally filter to a subset of formats.
+      2. Coerce each metric column to numeric, drop non‐numeric/NaN.
+      3. Perform Levene’s test for variance homogeneity.
+      4. If p_levene > alpha: one‐way ANOVA; else Kruskal–Wallis.
+      5. If ANOVA and p < alpha: Tukey HSD post‐hoc.
+      6. Build an English interpretation string.
+
+    Returns a dict mapping metric -> { … }
+    """
+    # 1) 过滤 formats（如有）
+    df_work = df.copy()
+    if format_list is not None:
+        df_work = df_work[df_work[group_col].isin(format_list)]
+
+    # 2) 默认指标列表
+    if metrics is None:
+        metrics = [
+            'mental-demand',
+            'physical-demand',
+            'temporal-demand',
+            'performance',
+            'effort',
+            'frustration'
+        ]
+
+    results = {}
+    for metric in metrics:
+        if metric not in df_work.columns:
+            print(f"⚠️ Column '{metric}' not found; skipping.")
+            continue
+
+        # 强制转换为数值型，错误的条目变 NaN
+        df_work[metric] = pd.to_numeric(df_work[metric], errors='coerce')
+
+        # 2b) 丢弃 NaN
+        sub = df_work[[group_col, metric]].dropna()
+        groups = [g[metric].values for _, g in sub.groupby(group_col)]
+        if len(groups) < 2:
+            print(f"⚠️ Not enough formats for metric '{metric}'; skipping.")
+            continue
+
+        # 3) Levene’s test
+        w_stat, p_levene = levene(*groups)
+
+        # 4) 选择 ANOVA 或 Kruskal–Wallis
+        if p_levene > alpha:
+            stat, pval = f_oneway(*groups)
+            method = 'ANOVA'
+        else:
+            stat, pval = kruskal(*groups)
+            method = 'Kruskal–Wallis'
+
+        # 5) Tukey HSD
+        tukey = None
+        if method == 'ANOVA' and pval < alpha:
+            tukey = pairwise_tukeyhsd(
+                endog=sub[metric],
+                groups=sub[group_col],
+                alpha=alpha
+            )
+
+        # 6) 生成解读
+        var_msg = (
+            f"Levene’s test p = {p_levene:.3f} "
+            f"({'homogeneous' if p_levene>alpha else 'heterogeneous'}) variances."
+        )
+        if pval < alpha:
+            main_msg = (
+                f"{method} p = {pval:.3f} (< {alpha}): "
+                "significant differences among formats."
+            )
+            if tukey is not None:
+                main_msg += " See Tukey HSD for pairwise comparisons."
+        else:
+            main_msg = (
+                f"{method} p = {pval:.3f} (≥ {alpha}): "
+                "no significant differences among formats."
+            )
+
+        interp = f"Metric '{metric}': {var_msg} {main_msg}"
+
+        results[metric] = {
+            'levene': (w_stat, p_levene),
+            'method': method,
+            'stat': stat,
+            'p_value': pval,
+            'tukey': tukey,
+            'interpretation': interp
+        }
+
+    return results
 
 # def extract_post_task_questions(all_data):
 #     """
@@ -799,6 +1048,163 @@ def plot_metrics_by_format_and_task(df_post_questions,
 
     plt.tight_layout()
     return fig
+
+
+def process_clean_post_tasks(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Given a DataFrame with columns
+      ['participantId','format','task','startTime','endTime',
+       'duration_sec','difficulty','confidence',...],
+    this function:
+
+      1. Keeps all original rows unchanged.
+      2. For each participantId (and format), aggregates any tasks whose names
+         start with 'reading-task-tabular-' or 'modifying-task-tabular-'
+         into a new row with task_group 'reading-task-tabular' or
+         'modifying-task-tabular' respectively.
+      3. Aggregation rules:
+         - duration_sec: summed across suffix variants
+         - difficulty, confidence: averaged across suffix variants
+      4. Returns a DataFrame with an extra column 'task_group', containing
+         both original task names and the new aggregated group names.
+    """
+    df = df.copy()
+    # keep original task names in a new column task_group
+    df['task_group'] = df['task']
+    
+    agg_frames = []
+    # define prefixes to aggregate
+    prefixes = ['reading-task-tabular', 'modifying-task-tabular']
+    
+    for prefix in prefixes:
+        # match tasks like 'prefix-1', 'prefix-2', etc.
+        mask = df['task'].str.match(rf'^{prefix}-\d+$')
+        if not mask.any():
+            continue
+        
+        # select those rows
+        tmp = df[mask].copy()
+        # group by participantId, format
+        grouped = tmp.groupby(['participantId','format'], as_index=False)
+        # sum duration, mean difficulty & confidence
+        summary = grouped.agg({
+            'duration_sec':  'sum',
+            'difficulty':    'mean',
+            'confidence':    'mean'
+        })
+        summary['task_group'] = prefix
+        # keep only the needed columns plus task_group
+        agg_frames.append(summary[[
+            'participantId','format','task_group',
+            'duration_sec','difficulty','confidence'
+        ]])
+    
+    # combine original and aggregated rows
+    df_combined = pd.concat(
+        [df[['participantId','format','task','task_group',
+             'duration_sec','difficulty','confidence']]] + agg_frames,
+        ignore_index=True,
+        sort=False
+    )
+    return df_combined
+
+
+def test_post_task_metrics(
+    df: pd.DataFrame,
+    metrics: list = None,
+    task_groups: list = None,
+    alpha: float = 0.05
+) -> dict:
+    """
+    Within each task_group, test whether the formats differ on each metric.
+
+    Args:
+      df            DataFrame must contain ['task_group','format'] + metrics
+      metrics       list of metric columns to test; defaults to
+                    ['duration_sec','difficulty','confidence']
+      task_groups   list of task_group values to include; by default all unique ones
+      alpha         significance level
+
+    Returns:
+      results: dict keyed by task_group, each is another dict keyed by metric:
+        {
+          'levene': (W, p_levene),
+          'method': 'ANOVA' or 'Kruskal–Wallis',
+          'stat': F or H value,
+          'p_value': p,
+          'tukey': TukeyHSDResults or None,
+          'interpretation': str
+        }
+    """
+    if metrics is None:
+        metrics = ['duration_sec','difficulty','confidence']
+    # decide which task_groups to iterate
+    if task_groups is None:
+        task_groups = df['task_group'].unique().tolist()
+    
+    results = {}
+    for tg in task_groups:
+        df_t = df[df['task_group'] == tg]
+        # find formats present
+        formats = df_t['format'].dropna().unique().tolist()
+        if len(formats) < 2:
+            continue
+        
+        results[tg] = {}
+        for metric in metrics:
+            if metric not in df_t.columns:
+                continue
+            # drop missing
+            sub = df_t[['format', metric]].dropna()
+            groups = [g[metric].values for _, g in sub.groupby('format')]
+            if len(groups) < 2:
+                continue
+            
+            # Levene’s test
+            w_stat, p_levene = levene(*groups)
+            # choose test
+            if p_levene > alpha:
+                stat, pval = f_oneway(*groups)
+                method = 'ANOVA'
+            else:
+                stat, pval = kruskal(*groups)
+                method = 'Kruskal–Wallis'
+            # Tukey HSD if ANOVA + significant
+            tukey = None
+            if method == 'ANOVA' and pval < alpha:
+                tukey = pairwise_tukeyhsd(
+                    endog=sub[metric],
+                    groups=sub['format'],
+                    alpha=alpha
+                )
+            # interpretation
+            if p_levene > alpha:
+                var_interp = f"Levene’s p = {p_levene:.3f} (> {alpha}), variances homogeneous."
+            else:
+                var_interp = f"Levene’s p = {p_levene:.3f} (≤ {alpha}), variances heterogeneous."
+            if pval < alpha:
+                main_interp = (
+                    f"{method} p = {pval:.3f} (< {alpha}): "
+                    f"formats differ significantly on {metric}."
+                )
+                if tukey is not None:
+                    main_interp += " See Tukey HSD for pairwise."
+            else:
+                main_interp = (
+                    f"{method} p = {pval:.3f} (≥ {alpha}): "
+                    f"no significant format differences on {metric}."
+                )
+            interp = f"[{tg}] {var_interp} {main_interp}"
+            
+            results[tg][metric] = {
+                'levene': (w_stat, p_levene),
+                'method': method,
+                'stat': stat,
+                'p_value': pval,
+                'tukey': tukey,
+                'interpretation': interp
+            }
+    return results
 
 
 import pandas as pd
