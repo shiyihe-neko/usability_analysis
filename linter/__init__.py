@@ -1,5 +1,3 @@
-# writing_tabular_analysis.py
-
 import re
 import json
 import json5            # pip install json5
@@ -15,7 +13,7 @@ import pandas as pd
 import numpy as np
 from tree_sitter import Language, Parser  # pip install tree_sitter
 import zss              # pip install zss
-from writing_evaluator import extract_writing_tabular_tasks
+from writing_evaluator import extract_writing_tabular_tasks,extract_modifying_tabular_tasks
 import matplotlib.pyplot as plt
 # -----------------------------------------------------------------------------
 # 1) 语法校验
@@ -342,590 +340,6 @@ def plot_avg_total_changes_by_format(df_diff: pd.DataFrame):
     plt.tight_layout()
     plt.show()
 
-# -----------------------------------------------------------------------------
-# 4) Tree-sitter AST tree-edit distance 比对
-# -----------------------------------------------------------------------------
-
-# # 初始化 Tree-sitter JSON parser
-# JSON_LANGUAGE = Language('build/my-languages.so', 'json')  # 确保此路径有效
-# TS_PARSER = Parser()
-# TS_PARSER.set_language(JSON_LANGUAGE)
-
-# # NodeWrapper 用于 zss tree-edit distance 比较
-# class NodeWrapper:
-#     def __init__(self, node, src_bytes):
-#         self.node = node
-#         self.src = src_bytes
-#     def get_label(self):
-#         txt = self.src[self.node.start_byte:self.node.end_byte].decode('utf-8').strip()
-#         return f"{self.node.type}:{txt}"
-#     def get_children(self):
-#         return [NodeWrapper(c, self.src) for c in self.node.children]
-
-# def tree_size(node: NodeWrapper) -> int:
-#     return 1 + sum(tree_size(c) for c in node.get_children())
-
-# # JSONC 注释移除
-# def remove_jsonc_comments(text: str) -> str:
-#     no_block = re.sub(r'/\*.*?\*/', '', text, flags=re.DOTALL)
-#     no_line  = re.sub(r'//.*?$', '', no_block, flags=re.MULTILINE)
-#     return no_line
-
-# # 将用户代码转换成 JSON 字符串（自动修复版本）
-# def convert_to_json_string_fixed(code_str: str, fmt: str) -> str:
-#     f = fmt.lower()
-#     try:
-#         if f in ["json", "jsonc"]:
-#             code_str = remove_jsonc_comments(code_str)
-#             code_str = re.sub(r",\s*([\]}])", r"\1", code_str)
-#             obj = json.loads(code_str)
-#         elif f == "json5":
-#             code_str = re.sub(r",\s*([\]}])", r"\1", code_str)
-#             obj = json5.loads(code_str)
-#         elif f == "hjson":
-#             obj = hjson.loads(code_str)
-#         elif f == "yaml":
-#             try:
-#                 obj = yaml.safe_load(code_str)
-#             except:
-#                 obj = yaml.load(code_str, Loader=yaml.FullLoader)
-#         elif f == "toml":
-#             code_str = re.sub(r"\n\s*\n", "\n", code_str)
-#             if "'" in code_str or '"' in code_str:
-#                 code_str = re.sub(r"(['\"])(.*?)\1?", r'"\2"', code_str)
-#             obj = toml.loads(code_str)
-#         elif f == "xml":
-#             txt = code_str.strip()
-#             if not txt.startswith("<root>"):
-#                 txt = f"<root>{txt}</root>"
-#             try:
-#                 obj = xmltodict.parse(txt)
-#             except:
-#                 txt_fixed = re.sub(r"<([^/>]+)>([^<>]*)<\1>", r"<\1>\2</\1>", txt)
-#                 obj = xmltodict.parse(txt_fixed)
-#         else:
-#             raise ValueError(f"Unsupported format: {fmt}")
-#     except Exception as e:
-#         raise ValueError(f"[Auto-fix failed] Parse error for format={fmt}: {e}")
-#     return json.dumps(obj, indent=2, sort_keys=True)
-
-# # 将标准答案转换成 JSON 字符串（格式一致）
-# def prepare_gold_structure(correct_data: dict, fmt: str) -> str:
-#     if fmt.lower() == 'xml':
-#         return json.dumps({"root": correct_data}, indent=2, sort_keys=True)
-#     return json.dumps(correct_data, indent=2, sort_keys=True)
-
-# # 计算 Tree-edit distance 相似度
-# def compare_structures_tree_edit_distance(user_code: str, gold_json: str, fmt: str) -> dict:
-#     try:
-#         user_json = convert_to_json_string_fixed(user_code, fmt)
-#     except Exception as e:
-#         return {"ted": None, "normalized_ted": None, "similarity_score": None, "error": str(e)}
-    
-#     src1, src2 = bytes(gold_json, 'utf-8'), bytes(user_json, 'utf-8')
-#     t1, t2 = TS_PARSER.parse(src1), TS_PARSER.parse(src2)
-#     w1, w2 = NodeWrapper(t1.root_node, src1), NodeWrapper(t2.root_node, src2)
-
-#     ted = zss.simple_distance(w1, w2,
-#                               get_children=lambda n: n.get_children(),
-#                               get_label=lambda n: n.get_label())
-#     size1, size2 = tree_size(w1), tree_size(w2)
-#     max_size = max(size1, size2) or 1
-#     n_ted = ted / max_size
-#     return {
-#         "ted": ted,
-#         "normalized_ted": round(n_ted, 4),
-#         "similarity_score": round(1 - n_ted, 4),
-#         "error": None
-#     }
-
-# # 主函数：批量处理所有参与者的结构比对任务
-# def batch_tree_distance_analysis(all_data: dict, correct_tabular_data: dict) -> pd.DataFrame:
-#     rows = []
-#     for fn, quiz in all_data.items():
-#         answers = quiz.get('answers', {})
-#         pid = fn
-#         for v in answers.values():
-#             if isinstance(v, dict):
-#                 ans = v.get('answer', {})
-#                 if isinstance(ans, dict) and 'prolificId' in ans:
-#                     pid = ans['prolificId']
-#                     break
-
-#         fmt = None
-#         for k in answers:
-#             m = re.match(r"tutorial-(\w+)-part1", k)
-#             if m:
-#                 fmt = m.group(1).lower()
-#                 break
-#         if not fmt:
-#             for k in answers:
-#                 if k.startswith("writing-task-tabular-"):
-#                     fmt = k.split("writing-task-tabular-")[1].split("-")[0].lower()
-#                     break
-#         if not fmt:
-#             continue  # 无法确定格式
-
-#         gold_json = prepare_gold_structure(correct_tabular_data, fmt)
-
-#         for key, content in answers.items():
-#             if not key.startswith("writing-task-tabular-"):
-#                 continue
-#             code = content.get('answer', {}).get('code')
-#             if not code:
-#                 continue
-#             res = compare_structures_tree_edit_distance(code, gold_json, fmt)
-#             rows.append({
-#                 "participantId": pid,
-#                 "format": fmt,
-#                 "task": key,
-#                 **res
-#             })
-#     return pd.DataFrame(rows)
-
-# def plot_similarity_score_by_format(df_ted: pd.DataFrame):
-#     """
-#     平均 similarity_score 按 format 分组画柱状图
-#     """
-#     avg_sim = (
-#         df_ted.groupby("format")["similarity_score"]
-#               .mean()
-#               .sort_values(ascending=False)
-#     )
-
-#     plt.figure(figsize=(10, 5))
-#     avg_sim.plot(kind='bar')
-#     plt.title("Average Structure Similarity Score (Tree-edit Distance)")
-#     plt.ylabel("Similarity Score")
-#     plt.xlabel("Format")
-#     plt.xticks(rotation=45)
-#     plt.grid(axis='y', linestyle='--', alpha=0.5)
-#     plt.tight_layout()
-#     plt.show()
-
-
-#     "json": Language('build/my-languages.so', 'json'),
-#     "yaml": Language('build/my-languages.so', 'yaml'),
-#     "toml": Language('build/my-languages.so', 'toml'),
-#     "xml": Language('build/my-languages.so', 'xml'),
-#     # 其它格式（json5/jsonc/hjson）建议先预处理成json后使用json parser
-# }
-
-# def get_parser_for_format(fmt: str) -> Parser:
-#     if fmt not in LANGUAGES:
-#         raise ValueError(f"Unsupported format: {fmt}")
-#     parser = Parser()
-#     parser.set_language(LANGUAGES[fmt])
-#     return parser
-
-
-# class NodeWrapper:
-#     def __init__(self, node, src_bytes):
-#         self.node = node
-#         self.src = src_bytes
-#     def get_label(self):
-#         text = self.src[self.node.start_byte:self.node.end_byte].decode('utf-8').strip()
-#         return f"{self.node.type}:{text}"
-#     def get_children(self):
-#         return [NodeWrapper(c, self.src) for c in self.node.children]
-
-# def tree_size(node):
-#     return 1 + sum(tree_size(c) for c in node.get_children())
-
-# def compare_ast_by_tree_sitter(user_code: str, gold_code: str) -> dict:
-#     try:
-#         # 强制转为 JSON 字符串，避免因格式不一致失败
-#         gold_json = json.dumps(json.loads(gold_code), indent=2, sort_keys=True)
-#         user_json = json.dumps(json.loads(user_code), indent=2, sort_keys=True)
-#         src1, src2 = gold_json.encode(), user_json.encode()
-#         tree1, tree2 = TS_PARSER.parse(src1), TS_PARSER.parse(src2)
-#         node1, node2 = NodeWrapper(tree1.root_node, src1), NodeWrapper(tree2.root_node, src2)
-#         ted = zss.simple_distance(node1, node2,
-#                                   get_children=lambda n: n.get_children(),
-#                                   get_label=lambda n: n.get_label())
-#         max_size = max(tree_size(node1), tree_size(node2)) or 1
-#         return {
-#             "ted": ted,
-#             "normalized_ted": round(ted / max_size, 4),
-#             "similarity_score": round(1 - ted / max_size, 4),
-#             "error": None
-#         }
-#     except Exception as e:
-#         return {"ted": None, "normalized_ted": None, "similarity_score": None, "error": f"[TreeSitter] {e}"}
-
-# def batch_tree_distance_analysis_tree_only(all_data: dict, correct_data: dict) -> pd.DataFrame:
-#     """
-#     使用 Tree-sitter AST 比较结构差异，返回每个参与者与标准答案的结构相似度。
-#     """
-#     results = []
-
-#     gold_code = json.dumps(correct_data, indent=2, sort_keys=True)  # 转为 JSON 字符串，统一格式
-
-#     for file_name, quiz_data in all_data.items():
-#         answers = quiz_data.get('answers', {})
-
-#         # 提取 participantId
-#         pid = file_name
-#         for task_info in answers.values():
-#             if isinstance(task_info, dict):
-#                 ans = task_info.get('answer', {})
-#                 if isinstance(ans, dict) and 'prolificId' in ans:
-#                     pid = ans['prolificId']
-#                     break
-
-#         # 提取 format（从 tutorial-xxx-part1 推断）
-#         fmt = "unknown"
-#         for k in answers:
-#             m = re.match(r"tutorial-(\w+)-part1", k)
-#             if m:
-#                 fmt = m.group(1).lower()
-#                 break
-
-#         # 遍历 writing-task-tabular-xxx
-#         for key, content in answers.items():
-#             if not key.startswith("writing-task-tabular-"):
-#                 continue
-#             answer_block = content.get('answer', {})
-#             code = answer_block.get('code') if isinstance(answer_block, dict) else None
-#             if not code:
-#                 continue
-
-#             res = compare_ast_by_tree_sitter(code, gold_code)
-
-#             results.append({
-#                 "participantId": pid,
-#                 "format": fmt,
-#                 "task": key,
-#                 **res
-#             })
-
-#     return pd.DataFrame(results)
-
-# 设置 Tree-sitter JSON parser（请确保 build/my-languages.so 已构建）
-# try:
-#     JSON_LANGUAGE = Language('build/my-languages.so', 'json')
-#     parser = Parser()
-#     parser.set_language(JSON_LANGUAGE)
-# except Exception as e:
-#     print(f"初始化Tree-sitter解析器失败: {e}")
-#     print("请确保已编译tree-sitter语言库到build/my-languages.so")
-
-# # Tree node wrapper for ZSS
-# class NodeWrapper:
-#     def __init__(self, node, source):
-#         self.node = node
-#         self.source = source
-
-#     def get_label(self):
-#         try:
-#             return f"{self.node.type}:{self.source[self.node.start_byte:self.node.end_byte].decode('utf-8').strip()}"
-#         except Exception:
-#             return f"{self.node.type}:error"
-
-#     def get_children(self):
-#         return [NodeWrapper(child, self.source) for child in self.node.children]
-
-# def tree_size(node):
-#     """计算树的节点数量"""
-#     return 1 + sum(tree_size(child) for child in node.get_children())
-
-# def clean_comments(code_str):
-#     """清除代码中的注释"""
-#     # 清除单行注释
-#     code_str = re.sub(r"//.*?$", "", code_str, flags=re.MULTILINE)
-#     # 清除多行注释
-#     code_str = re.sub(r"/\*.*?\*/", "", code_str, flags=re.DOTALL)
-#     return code_str
-
-# def convert_to_json_string(code_str, fmt):
-#     """转换任意支持格式为标准 JSON 字符串（供 tree-sitter 使用）"""
-#     if not code_str or not isinstance(code_str, str):
-#         raise ValueError(f"Invalid code string: {type(code_str)}")
-    
-#     code_str = code_str.strip()
-#     fmt = fmt.lower()
-    
-#     try:
-#         if fmt == "json":
-#             parsed = json.loads(code_str)
-#         elif fmt == "jsonc":
-#             cleaned_code = clean_comments(code_str)
-#             parsed = json.loads(cleaned_code)
-#         elif fmt == "json5":
-#             parsed = json5.loads(code_str)
-#         elif fmt == "hjson":
-#             parsed = hjson.loads(code_str)
-#         elif fmt == "yaml" or fmt == "yml":
-#             parsed = yaml.safe_load(code_str)
-#         elif fmt == "toml":
-#             parsed = toml.loads(code_str)
-#         elif fmt == "xml":
-#             # 确保有根元素
-#             if not (code_str.startswith("<") and ">" in code_str):
-#                 raise ValueError("Invalid XML format")
-                
-#             # 如果没有单一根节点，添加一个root标签
-#             if not (code_str.strip().startswith("<?xml") or 
-#                    (code_str.strip().startswith("<") and code_str.strip().endswith(">") and 
-#                     code_str.count("<") - code_str.count("</") == 1)):
-#                 code_str = f"<root>{code_str}</root>"
-                
-#             parsed = xmltodict.parse(code_str)
-#         else:
-#             # 如果格式未知，尝试自动检测
-#             for parser_fmt, parser_func in [
-#                 ("json", json.loads),
-#                 ("json5", json5.loads),
-#                 ("hjson", hjson.loads),
-#                 ("yaml", yaml.safe_load),
-#                 ("toml", toml.loads)
-#             ]:
-#                 try:
-#                     parsed = parser_func(code_str)
-#                     print(f"自动检测格式为: {parser_fmt}")
-#                     break
-#                 except Exception:
-#                     continue
-#             else:
-#                 # 如果所有格式都失败了
-#                 raise ValueError(f"无法解析未知格式: {fmt}")
-        
-#         # 统一转换为排序的JSON字符串
-#         return json.dumps(parsed, indent=2, sort_keys=True)
-#     except Exception as e:
-#         raise ValueError(f"转换格式 {fmt} 到 JSON 失败: {str(e)}\n代码片段: {code_str[:100]}...")
-
-# def compare_structures_tree_edit_distance(code1, code2, fmt1="json", fmt2=None):
-#     """
-#     比较两个不同格式代码的结构相似度
-    
-#     Args:
-#         code1: 第一个代码字符串（参考/正确答案）
-#         code2: 第二个代码字符串（用户答案）
-#         fmt1: 第一个代码的格式
-#         fmt2: 第二个代码的格式，如果为None则与fmt1相同
-    
-#     Returns:
-#         包含树编辑距离、归一化距离和相似度分数的字典
-#     """
-#     if fmt2 is None:
-#         fmt2 = fmt1
-    
-#     try:
-#         json1 = convert_to_json_string(code1, fmt1)
-#         json2 = convert_to_json_string(code2, fmt2)
-#     except Exception as e:
-#         return {
-#             "error": f"解析失败 ({fmt1}/{fmt2}): {str(e)}",
-#             "ted": None,
-#             "normalized_ted": None,
-#             "similarity_score": None
-#         }
-
-#     source1 = bytes(json1, "utf-8")
-#     source2 = bytes(json2, "utf-8")
-
-#     try:
-#         tree1 = parser.parse(source1)
-#         tree2 = parser.parse(source2)
-#     except Exception as e:
-#         return {"error": f"Tree解析失败: {e}"}
-
-#     zss_tree1 = NodeWrapper(tree1.root_node, source1)
-#     zss_tree2 = NodeWrapper(tree2.root_node, source2)
-
-#     try:
-#         ted = zss.simple_distance(
-#             zss_tree1, zss_tree2,
-#             get_children=lambda node: node.get_children(),
-#             get_label=lambda node: node.get_label()
-#         )
-
-#         size1 = tree_size(zss_tree1)
-#         size2 = tree_size(zss_tree2)
-#         max_size = max(size1, size2)
-#         n_ted = ted / max_size if max_size else 0
-#         similarity = 1 - n_ted
-
-#         return {
-#             "ted": ted,
-#             "normalized_ted": round(n_ted, 4),
-#             "similarity_score": round(similarity, 4),
-#             "tree_size1": size1,
-#             "tree_size2": size2,
-#             "error": None
-#         }
-#     except Exception as e:
-#         return {"error": f"计算树编辑距离失败: {e}"}
-
-# def detect_format(code_str):
-#     """尝试自动检测代码格式"""
-#     # 检查是否是XML
-#     if code_str.strip().startswith("<") and ">" in code_str:
-#         return "xml"
-    
-#     # 检查是否包含 TOML 标识符
-#     if re.search(r"^\[.*\]", code_str, re.MULTILINE):
-#         return "toml"
-    
-#     # 检查缩进和使用的分隔符来区分 YAML 和 JSON 系列
-#     if ":" in code_str and ("{" not in code_str or "[" not in code_str):
-#         return "yaml"
-    
-#     # 检查是否包含 JSON5 特性
-#     if re.search(r"//|/\*|\*/|,$", code_str):
-#         return "json5"
-    
-#     # 默认为标准 JSON
-#     return "json"
-
-# def batch_tree_distance_analysis(all_data, gold_struct_code, gold_format="json"):
-#     """
-#     批量比较用户答案与标准答案的结构相似度
-    
-#     Args:
-#         all_data: 包含所有用户答案的数据字典
-#         gold_struct_code: 标准答案代码字符串
-#         gold_format: 标准答案的格式
-    
-#     Returns:
-#         包含比较结果的DataFrame
-#     """
-#     results = []
-
-#     for file_name, quiz_data in all_data.items():
-#         answers = quiz_data.get('answers', {})
-        
-#         # 提取 participantId
-#         participant_id = file_name
-#         for v in answers.values():
-#             if isinstance(v, dict):
-#                 a = v.get("answer", {})
-#                 if isinstance(a, dict) and "prolificId" in a:
-#                     participant_id = a["prolificId"]
-#                     break
-
-#         # 推测用户使用的格式
-#         format_name = None
-#         # 从教程部分推测格式
-#         for k in answers:
-#             m = re.match(r"tutorial-(\w+)-part1", k)
-#             if m:
-#                 format_name = m.group(1).lower()
-#                 break
-#         # 从写作任务键名推测格式
-#         if not format_name:
-#             for k in answers:
-#                 if "writing-task-tabular-" in k:
-#                     parts = k.replace("writing-task-tabular-", "").split("_")
-#                     if parts:
-#                         format_name = parts[0].lower()
-#                         break
-#         # 默认未知格式
-#         if not format_name:
-#             format_name = "unknown"
-
-#         # 处理每个写作任务
-#         for key, content in answers.items():
-#             if key.startswith("writing-task-tabular-") and "_post-task-question" not in key and isinstance(content, dict):
-#                 ans_block = content.get("answer", {})
-#                 code = ans_block.get("code") if isinstance(ans_block, dict) else None
-                
-#                 if not code:
-#                     continue
-                
-#                 # 如果格式仍然未知，尝试自动检测
-#                 user_format = format_name
-#                 if user_format == "unknown":
-#                     try:
-#                         user_format = detect_format(code)
-#                     except:
-#                         pass
-
-#                 # Tree Edit Distance 分析
-#                 try:
-#                     ted_result = compare_structures_tree_edit_distance(
-#                         gold_struct_code, code, 
-#                         fmt1=gold_format, 
-#                         fmt2=user_format
-#                     )
-                    
-#                     ted = ted_result.get("ted")
-#                     norm_ted = ted_result.get("normalized_ted")
-#                     sim = ted_result.get("similarity_score")
-#                     size1 = ted_result.get("tree_size1")
-#                     size2 = ted_result.get("tree_size2")
-#                     err = ted_result.get("error", "")
-#                 except Exception as e:
-#                     ted = None
-#                     norm_ted = None
-#                     sim = None
-#                     size1 = None
-#                     size2 = None
-#                     err = f"TED错误: {e}"
-
-#                 results.append({
-#                     "participantId": participant_id,
-#                     "format": user_format,
-#                     "task": key,
-#                     "ted": ted,
-#                     "normalized_ted": norm_ted,
-#                     "similarity_score": sim,
-#                     "gold_tree_size": size1,
-#                     "user_tree_size": size2,
-#                     "error": err
-#                 })
-
-#     return pd.DataFrame(results)
-
-
-# def batch_tree_distance_analysis_tree_only(all_data, gold_struct_data):
-#     """
-#     通过树编辑距离批量比较用户答案与标准答案的结构相似度
-    
-#     Args:
-#         all_data: 包含所有用户答案的数据字典
-#         gold_struct_data: 标准答案的Python字典对象 (不是字符串)
-    
-#     Returns:
-#         包含比较结果的DataFrame
-#     """
-#     # 将Python字典转换为JSON字符串，用于树结构比较
-#     gold_struct_code = json.dumps(gold_struct_data, indent=2, sort_keys=True)
-    
-#     # 调用原有比较函数
-#     return batch_tree_distance_analysis(all_data, gold_struct_code, gold_format="json")
-
-# def evaluate_user_solution(user_code, gold_struct_code, user_format=None):
-#     """
-#     单独评估一个用户解决方案与标准答案的相似度
-    
-#     Args:
-#         user_code: 用户的代码字符串
-#         gold_struct_code: 标准答案代码字符串
-#         user_format: 用户代码的格式，如果为None则自动检测
-    
-#     Returns:
-#         包含比较结果的字典
-#     """
-#     if user_format is None:
-#         user_format = detect_format(user_code)
-    
-#     result = compare_structures_tree_edit_distance(
-#         gold_struct_code, user_code, 
-#         fmt1="json", 
-#         fmt2=user_format
-#     )
-    
-#     return {
-#         "format": user_format,
-#         "similarity_score": result.get("similarity_score"),
-#         "normalized_ted": result.get("normalized_ted"),
-#         "tree_edit_distance": result.get("ted"),
-#         "gold_tree_size": result.get("tree_size1"),
-#         "user_tree_size": result.get("tree_size2"),
-#         "error": result.get("error")
-#     }
 
 
 # 设置 Tree-sitter JSON parser（请确保 build/my-languages.so 已构建）
@@ -1556,6 +970,9 @@ def compare_structures_tree_edit_distance(code1, code2, fmt1="json", fmt2=None):
         }
 
 
+
+
+
 def calculate_format_similarity_stats(results_df):
     """
     计算每种格式的平均相似度统计信息
@@ -1694,6 +1111,8 @@ def visualize_format_similarity(format_stats, output_file=None):
 
 
 def batch_tree_distance_analysis(all_data, gold_struct_code, gold_format="json"):
+
+    
     """
     批量比较用户答案与标准答案的结构相似度
     
@@ -1820,6 +1239,60 @@ def batch_tree_distance_analysis(all_data, gold_struct_code, gold_format="json")
 
 
 
+
+def analyze_tabular_modifying_diff(all_data: dict,
+                                   correct_data_dict: dict) -> pd.DataFrame:
+    """
+    对 modifying-task-tabular-* 的用户代码与对应标准答案进行 Git-diff 比较。
+
+    参数：
+      all_data: dict, 完整数据
+      correct_data_dict: dict[str, dict], 键为 task_cleaned（如 modifying-task-tabular-1），值为该任务的标准 JSON 数据
+
+    返回：
+      DataFrame，包含 diff 统计信息
+    """
+    df_tab = extract_modifying_tabular_tasks(all_data)
+
+    results = []
+    for _, row in df_tab.iterrows():
+        fmt = row['format']
+        task_full = row['task']  # e.g., modifying-task-tabular-hjson-1
+        match = re.match(r"^modifying-task-tabular-\w+-(\d+)$", task_full)
+        if not match:
+            continue
+        task_suffix = match.group(1)
+        task_cleaned = f"modifying-task-tabular-{task_suffix}"
+
+        # 拿到标准答案（基于 task_cleaned）
+        correct_json = correct_data_dict.get(task_cleaned)
+        if not correct_json:
+            continue
+
+        user_code = (row['code'] or "").strip()
+        correct_code = serialize_correct_tabular_data(correct_json, fmt)
+
+        diff = git_diff_string(correct_code, user_code)
+
+        # 尝试语法检查（非硬性，只记录）
+        parser = STRICT_PARSERS.get(fmt)
+        try:
+            valid = 1 if parser and parser(user_code) else 0
+        except:
+            valid = 0
+
+        results.append({
+            "participantId":     row['participantId'],
+            "format":            fmt,
+            "task":              task_cleaned,
+            "syntax_valid":      valid,
+            "num_added_lines":   diff['num_added_lines'],
+            "num_removed_lines": diff['num_removed_lines'],
+            "total_changes":     diff['total_changes'],
+            "diff_text":         diff['diff_text']
+        })
+
+    return pd.DataFrame(results)
 
     
     """
