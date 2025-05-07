@@ -241,3 +241,69 @@ def plot_tabular_metrics_by_format(df_tabular, format_list=None):
 
 
 
+def extract_modifying_tabular_tasks(all_data, format_list=None):
+    """
+    提取所有 modifying-task-tabular-<format>-<n> 条目：
+      - participantId
+      - format               (如 'hjson')
+      - code                 (answer['code'])
+      - startTime, endTime
+      - duration_sec
+      - helpButtonClickedCount
+
+    参数:
+      all_data    dict, load_quiz_data 的输出
+      format_list list[str] 可选, 只保留这些 format
+
+    返回:
+      pandas.DataFrame
+    """
+    rows = []
+    pattern = re.compile(r'^modifying-task-tabular-([^-]+)-\d+$')
+
+    for fn, quiz in all_data.items():
+        answers = quiz.get('answers', {})
+
+        # 获取 participantId
+        pid = fn
+        for info in answers.values():
+            if isinstance(info, dict):
+                ansb = info.get('answer', {})
+                if isinstance(ansb, dict) and 'prolificId' in ansb:
+                    pid = ansb['prolificId']
+                    break
+
+        # 查找符合 pattern 的 task
+        for content in answers.values():
+            if not isinstance(content, dict):
+                continue
+            comp = content.get('componentName', '')
+            m = pattern.match(comp)
+            if not m:
+                continue
+            fmt = m.group(1).lower()
+            if format_list and fmt not in format_list:
+                continue
+
+            st = content.get('startTime')
+            ed = content.get('endTime')
+            dur = (ed - st) / 1000.0 if st is not None and ed is not None else None
+
+            ansb = content.get('answer', {}) or {}
+            code = ansb.get('code')
+            help_cnt = content.get('helpButtonClickedCount', None)
+
+            rows.append({
+                'participantId': pid,
+                'format':        fmt,
+                'task':         comp,
+                'code':          code,
+                'startTime':     st,
+                'endTime':       ed,
+                'duration_sec':  dur,
+                'helpButtonClickedCount': help_cnt
+            })
+
+    df = pd.DataFrame(rows)
+    df['duration_sec'] = pd.to_numeric(df['duration_sec'], errors='coerce')
+    return df
