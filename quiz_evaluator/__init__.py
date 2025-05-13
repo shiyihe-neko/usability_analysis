@@ -7,6 +7,97 @@ from scipy.stats import levene, f_oneway, kruskal
 from statsmodels.stats.multicomp import pairwise_tukeyhsd
 from typing import Tuple
 
+# def evaluate_quiz_answers_from_tutorial(all_data):
+#     """
+#     Iterate through all_data to evaluate tutorial quiz answers:
+#       - Extract participantId from prolificId or filename
+#       - Extract format from tutorial-<format>-part1 key
+#       - For each tutorial part (part1/part2), compare user answers against correct answers
+#       - Count wrong attempts and distributions
+#       - Return a DataFrame of quiz results per participant, quiz key, and format
+#     """
+#     quiz_results = []
+
+#     for file_name, quiz_data in all_data.items():
+#         answers = quiz_data.get('answers', {})
+
+#         # 1. 提取 participantId
+#         participant_id = None
+#         for task_info in answers.values():
+#             if isinstance(task_info, dict):
+#                 answer_block = task_info.get('answer', {})
+#                 if isinstance(answer_block, dict) and 'prolificId' in answer_block:
+#                     participant_id = answer_block['prolificId']
+#                     break
+#         if participant_id is None:
+#             participant_id = file_name
+
+#         # 2. 提取 format
+#         format_name = None
+#         for k in answers.keys():
+#             m = re.match(r"tutorial-(\w+)-part1", k)
+#             if m:
+#                 format_name = m.group(1).lower()
+#                 break
+#         format_name = format_name or "unknown"
+
+#         # 3. 遍历每个 quiz 任务
+#         for task_key, task_info in answers.items():
+#             if not isinstance(task_info, dict):
+#                 continue
+#             if not re.match(r"tutorial-\w+-part[12]$", task_key):
+#                 continue
+
+#             # 3.1 拿到正确答案
+#             correct_ans_list = task_info.get("correctAnswer", [])
+#             if not correct_ans_list or not isinstance(correct_ans_list[0], dict):
+#                 continue
+#             quiz_id = correct_ans_list[0].get("id")
+#             correct_answer = correct_ans_list[0].get("answer", [])
+#             correct_set = set(correct_answer)
+
+#             # 3.2 拿到用户最终答案
+#             answer_block = task_info.get("answer", {})
+#             user_final_ans = answer_block.get(quiz_id, [])
+#             is_correct = set(user_final_ans) == correct_set
+
+#             # 3.3 汇总所有错误尝试（来自 incorrectAnswers → value 字段）
+#             incorrect_info = task_info.get("incorrectAnswers", {}).get(quiz_id, {})
+#             # `value` 是一个 list of lists，例如 [['B','C'], ['B']]
+#             attempts = incorrect_info.get("value", [])
+
+#             # 3.4 统计每个选项出现频次
+#             counter = Counter()
+#             for attempt in attempts:
+#                 counter.update(attempt)
+
+#             # 跳过正确选项，留下纯错误分布
+#             wrong_choice_distribution = {
+#                 choice: cnt for choice, cnt in counter.items()
+#                 if choice not in correct_set
+#             }
+#             wrong_choice_count = sum(wrong_choice_distribution.values())
+
+#             quiz_results.append({
+#                 "participantId": participant_id,
+#                 "format":       format_name,
+#                 "quiz_key":     task_key,
+#                 "correct_answer":        correct_answer,
+#                 "user_final_answer":     user_final_ans,
+#                 "is_correct":            is_correct,
+#                 "num_wrong_attempts":    len(attempts),
+#                 "all_wrong_attempts_list":      attempts,
+#                 "all_wrong_attempts_frequency": dict(counter),
+#                 "wrong_choice_distribution":    wrong_choice_distribution,
+#                 "wrong_choice_count":           wrong_choice_count
+#             })
+
+#     return pd.DataFrame(quiz_results)
+
+import re
+import pandas as pd
+from collections import Counter
+
 def evaluate_quiz_answers_from_tutorial(all_data):
     """
     Iterate through all_data to evaluate tutorial quiz answers:
@@ -33,13 +124,12 @@ def evaluate_quiz_answers_from_tutorial(all_data):
             participant_id = file_name
 
         # 2. 提取 format
-        format_name = None
+        format_name = "unknown"
         for k in answers.keys():
             m = re.match(r"tutorial-(\w+)-part1", k)
             if m:
                 format_name = m.group(1).lower()
                 break
-        format_name = format_name or "unknown"
 
         # 3. 遍历每个 quiz 任务
         for task_key, task_info in answers.items():
@@ -50,7 +140,8 @@ def evaluate_quiz_answers_from_tutorial(all_data):
 
             # 3.1 拿到正确答案
             correct_ans_list = task_info.get("correctAnswer", [])
-            if not correct_ans_list or not isinstance(correct_ans_list[0], dict):
+            if (not correct_ans_list
+                    or not isinstance(correct_ans_list[0], dict)):
                 continue
             quiz_id = correct_ans_list[0].get("id")
             correct_answer = correct_ans_list[0].get("answer", [])
@@ -59,11 +150,11 @@ def evaluate_quiz_answers_from_tutorial(all_data):
             # 3.2 拿到用户最终答案
             answer_block = task_info.get("answer", {})
             user_final_ans = answer_block.get(quiz_id, [])
-            is_correct = set(user_final_ans) == correct_set
+            is_correct = (set(user_final_ans) == correct_set)
 
             # 3.3 汇总所有错误尝试（来自 incorrectAnswers → value 字段）
-            incorrect_info = task_info.get("incorrectAnswers", {}).get(quiz_id, {})
-            # `value` 是一个 list of lists，例如 [['B','C'], ['B']]
+            incorrect_info = task_info.get("incorrectAnswers", {}) \
+                                     .get(quiz_id, {})
             attempts = incorrect_info.get("value", [])
 
             # 3.4 统计每个选项出现频次
@@ -79,20 +170,21 @@ def evaluate_quiz_answers_from_tutorial(all_data):
             wrong_choice_count = sum(wrong_choice_distribution.values())
 
             quiz_results.append({
-                "participantId": participant_id,
-                "format":       format_name,
-                "quiz_key":     task_key,
-                "correct_answer":        correct_answer,
-                "user_final_answer":     user_final_ans,
-                "is_correct":            is_correct,
-                "num_wrong_attempts":    len(attempts),
-                "all_wrong_attempts_list":      attempts,
+                "participantId":             participant_id,
+                "format":                    format_name,
+                "quiz_key":                  task_key,
+                "correct_answer":            correct_answer,
+                "user_final_answer":         user_final_ans,
+                "correct":                   int(is_correct),   # <- 0 or 1
+                "num_wrong_attempts":        len(attempts),
+                "all_wrong_attempts_list":   attempts,
                 "all_wrong_attempts_frequency": dict(counter),
-                "wrong_choice_distribution":    wrong_choice_distribution,
-                "wrong_choice_count":           wrong_choice_count
+                "wrong_choice_distribution":     wrong_choice_distribution,
+                "wrong_choice_count":            wrong_choice_count
             })
 
     return pd.DataFrame(quiz_results)
+
 
 def _aggregate_dicts(series):
     """
